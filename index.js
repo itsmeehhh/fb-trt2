@@ -1,586 +1,349 @@
-const { exec } = require('child_process');
-const fs = require('fs')
-const {Blob, FormData} = require('formdata-node')
-const Tesseract = require('tesseract.js');
+require("dotenv").config();
 const express = require("express");
+const axios   = require("axios");
+
 const app = express();
-const bodyParser = require("body-parser");
-const port = 8080;
-require('dotenv').config();
-const Botly = require("botly");
-const fetch = require("node-fetch");
-const PageID = "208135635708754";
-const { Sequelize } = require('sequelize');
-const { Model, DataTypes } = require('sequelize');
-/*--------- SQ database ---------*/
-const sequelize = new Sequelize('database', 'user', 'pass', {
-  dialect: 'sqlite',
-  logging: false,
-  host: './db.sqlite'
-})
-sequelize.sync();
-class User extends Model {}
-User.init({uid: {type: DataTypes.STRING}, lang: {type: DataTypes.STRING}}, {sequelize, modelName: 'users', timestamps: false}); 
-/*--------- page database ---------*/
-const botly = new Botly({
-  accessToken: 'EAAMjoLwZBS6EBOwd5ojjlO9DrGqRd67IjOOe5nG3RLZBjWXPfsaqUAnyfmLyW6iF9FSo3u2msHktXkHabTty7W4YnbgVA8GQZBoIDm15N0fPJIOu0TcFztaL3ef3Ytxo9Ax2umtID7FdwHfuiOcO3PuG4gyMQv7cnGOVchQfBVad9ZADIIHQIaJdZB8QR23NK',
-  verifyToken: '12345678',
-  webHookPath: process.env.WB_PATH,
-  notificationType: Botly.CONST.REGULAR,
-  FB_URL: "https://graph.facebook.com/v18.0/",
-});
-/*--------- Functions ---------*/
-async function updateOrCreate (model, where, newItem) {
-   const foundItem = await model.findOne({where});
-   if (!foundItem) {
-        const item = await model.create(newItem)
-        return  {item, created: true};
-    }
-    const item = await model.update(newItem, {where});
-    return {item, created: false};
-}
-/*--------- Functions ---------*/
-app.get("/", function (_req, res) {
-  res.sendStatus(200);
-});
-app.use(
-  bodyParser.json({
-    verify: botly.getVerifySignature('e899d98de2e864523b60b8903e3e1fd1'),
-  })
-);
-app.use(bodyParser.urlencoded({ extended: false }));
-app.use("/webhook", botly.router());
-botly.on("message", async (senderId, message, data) => {
-  //aaaaaaaaaaaaa
-  botly.sendAction({id: senderId, action: Botly.CONST.ACTION_TYPES.MARK_SEEN});
-  botly.sendAction({id: senderId, action: Botly.CONST.ACTION_TYPES.TYPING_ON});
+app.use(express.json());
 
-  /*--------- s t a r t ---------*/
-  const user = await User.findOne({ where: { uid: senderId}});
-  if (message.message.text) {
-    if (user != null) {
-      async function detectLanguage(text) {
-        const response = await fetch(`https://api-trt-mopn.koyeb.app/translate.php?lang=default&text=${encodeURIComponent(text)}`);
-        if (!response.ok) {
-            throw new Error('Language detection failed');
-        }
-        const data = await response.json();
-        return data.detect;
-    }
-              let originalText = message.message.text;
+// ── إعدادات ──────────────────────────────────────────────────
+const PAGE_TOKEN    = process.env.PAGE_TOKEN    || "";
+const VERIFY_TOKEN  = process.env.VERIFY_TOKEN  || "abcd1234";
+const TRANSLATE_API = process.env.TRANSLATE_API || "https://trt-php.vercel.app/translate.php";
+const PORT          = process.env.PORT          || 8993;
+const DEFAULT_LANG  = process.env.DEFAULT_LANG  || "ar";
+const REVERSE_LANG  = process.env.REVERSE_LANG  || "en";
+const TTS_ENABLED   = process.env.TTS_ENABLED   === "true";
+const OWNER_1       = process.env.OWNER_1       || "amine.xyz";
+const OWNER_2       = process.env.OWNER_2       || "oussama.bakrine";
+const FB_API        = "https://graph.facebook.com/v19.0/me/messages";
 
-        // Detect language of original text
-        try {
-            const detectedLang = await detectLanguage(originalText);
+// ── اللغات المدعومة ───────────────────────────────────────────
+const LANGUAGES = [
+  { code: "en", name: "🇬🇧 English"    },
+  { code: "ar", name: "🇸🇦 العربية"    },
+  { code: "fr", name: "🇫🇷 Français"   },
+  { code: "de", name: "🇩🇪 Deutsch"    },
+  { code: "es", name: "🇪🇸 Español"    },
+  { code: "it", name: "🇮🇹 Italiano"   },
+  { code: "pt", name: "🇵🇹 Português"  },
+  { code: "ru", name: "🇷🇺 Русский"    },
+  { code: "tr", name: "🇹🇷 Türkçe"     },
+  { code: "zh", name: "🇨🇳 中文"       },
+  { code: "ja", name: "🇯🇵 日本語"     },
+  { code: "ko", name: "🇰🇷 한국어"     },
+  { code: "hi", name: "🇮🇳 Hindi"      },
+  { code: "fa", name: "🇮🇷 فارسی"      },
+  { code: "nl", name: "🇳🇱 Nederlands" },
+  { code: "pl", name: "🇵🇱 Polski"     },
+  { code: "sv", name: "🇸🇪 Svenska"    },
+  { code: "uk", name: "🇺🇦 Українська" },
+  { code: "ur", name: "🇵🇰 اردو"       },
+];
 
-            if (detectedLang === "en" || detectedLang === "fr" || detectedLang === `${user.dataValues.lang}`) {
-                // trt auto to ar
-                fetch(`https://api-trt-mopn.koyeb.app/translate.php?lang=ar&text=${encodeURIComponent(originalText)}`)
-                    .then(response => response.json())
-                    .then(data => {
-                        botly.sendText({
-                            id: senderId,
-                            text: `${data.result}\n\n---------------\n تم استخدام الترجمة العكسية `,
-                            quick_replies: [
-                                botly.createQuickReply("إضغط لتغيير اللغة 🔁", "ChangeLang")
-                            ]
-                        });
-                    })
-                    .catch(err => {
-                        console.error(err);
-                        botly.sendText({
-                            id: senderId,
-                            text: 'لم أتمكن من ترجمة هذا النص \n ربما النص طويل جدا او اذا لم يكن طويل اعد الارسال',
-                            quick_replies: [
-                                botly.createQuickReply("إضغط لتغيير اللغة 🔁", "ChangeLang")
-                            ]
-                        });
-                    });
-            } else {
-                fetch(`https://api-trt-mopn.koyeb.app/translate.php?lang=${user.dataValues.lang}&text=${encodeURIComponent(originalText)}`)
-                    .then(response => response.json())
-                    .then(data => {
-                        botly.sendText({
-                            id: senderId,
-                            text: data.result,
-                            quick_replies: [
-                                botly.createQuickReply("إضغط لتغيير اللغة 🔁", "ChangeLang")
-                            ]
-                        });
-                    })
-                    .catch(err => {
-                        console.error(err);
-                       botly.sendText({
-                            id: senderId,
-                            text: 'لم أتمكن من ترجمة هذا النص \n ربما النص طويل جدا او اذا لم يكن طويل اعد الارسال',
-                            quick_replies: [
-                                botly.createQuickReply("إضغط لتغيير اللغة 🔁", "ChangeLang")
-                            ]
-                        });
-                    });
-            }
-        } catch (err) {
-            console.error("Language detection error:", err);
-          ////////////
-          fetch(`https://api-trt-mopn.koyeb.app/translate.php?lang=${user.dataValues.lang}&text=${encodeURIComponent(originalText)}`)
-                    .then(response => response.json())
-                    .then(data => {
-                        botly.sendText({
-                            id: senderId,
-                            text: data.result,
-                            quick_replies: [
-                                botly.createQuickReply("إضغط لتغيير اللغة 🔁", "ChangeLang")
-                            ]
-                        });
-                    })
-                    .catch(err => {
-                        console.error(err);
-                       botly.sendText({
-                            id: senderId,
-                            text: 'لم أتمكن من ترجمة هذا النص \n ربما النص طويل جدا او اذا لم يكن طويل اعد الارسال',
-                            quick_replies: [
-                                botly.createQuickReply("إضغط لتغيير اللغة 🔁", "ChangeLang")
-                            ]
-                        });
-                    });
-          ///////
-        }
-      } else {
-        await User.create({ uid: senderId, lang: "en" });
-        fetch(`https://api-trt-mopn.koyeb.app/translate.php?lang=en&text=${message.message.text}`)
-        .then(response => response.json())
-        .then(data => {
-            botly.sendText({id: senderId, text: data.result,
-            quick_replies: [
-                botly.createQuickReply("إضغط لتغيير اللغة 🔁", "ChangeLang")]})
-                }).catch(err => {console.error(err)});
-      }
-    } else if (message.message.attachments[0].payload.sticker_id) {
-      botly.sendText({id: senderId, text: "(Y)"}) ;
-    } else if (message.message.attachments[0].type == "image") {
-        const attachment = message.message.attachments[0] 
-        const images = attachment.payload.url;
-      botly.sendText({id: senderId, text: "الميزة قيد التطوير \nانتظر قليلا😄⌛\nقد استغرق وقتا أطول لترجمة صورتك"});
-    if (user != null) {
-Tesseract.recognize(images, 'ara+eng+fra+deu+rus+ita+tur+kor+jpn+sqi+swe+hin+spa') 
-      .then(result => {
-const texts = result.data.text
- fetch(`https://api-trt-mopn.koyeb.app/translate.php?lang=${user.dataValues.lang}&text=${texts}`)
-  .then(response => response.json())
-  .then(data => {
-      botly.sendText({id: senderId, text: data.result,
-      quick_replies: [
-          botly.createQuickReply("إضغط لتغيير اللغة 🔁", "ChangeLang")]})
-          }).catch(err => {console.log(err)});})
-    } else {
-      await User.create({ uid: senderId, lang: "ar" });
-Tesseract.recognize(images, 'ara+eng+fra+deu+rus+ita+tur+kor+jpn+sqi+swe+hin+spa') 
-      .then(result => {
-const texts = result.data.text
- fetch(`https://api-trt-mopn.koyeb.app/translate.php?lang=ar&text=${texts}`)
-  .then(response => response.json())
-  .then(data => {
-      botly.sendText({id: senderId, text: data.result,
-      quick_replies: [
-          botly.createQuickReply("إضغط لتغيير اللغة 🔁", "ChangeLang")]})
-          }).catch(err => {console.log(err)});})
-    }
-    } else if (message.message.attachments[0].type == "audio") {
-      botly.sendText({id: senderId, text: "يمكنني ترجمة النصوص فقط 🥺"});
-        } else if (message.message.attachments[0].type == "video") {
-      botly.sendText({id: senderId, text: "يمكنني ترجمة النصوص فقط 🥺"});
-    }
-  /*--------- e n d ---------*/
-//botly.sendAction({id: senderId, action: Botly.CONST.ACTION_TYPES.TYPING_OFF}); 
-});
-botly.on("postback", async (senderId, message, postback, data, ref) => {
- //aaaaaaaaaa
-  botly.sendAction({id: senderId, action: Botly.CONST.ACTION_TYPES.MARK_SEEN});
-  //aaaaaaaa
-  botly.sendAction({id: senderId, action: Botly.CONST.ACTION_TYPES.TYPING_ON});
-    /*--------- s t a r t ---------*/
-  const user = await User.findOne({ where: { uid: senderId}});
-    if (message.postback){ // Normal (buttons)
-    if (postback == "GET_STARTED"){
-        if (user != null) {
-          botly.sendText({id: senderId, text: "سعيد بلقائك مرة اخرى 😄\nانا مستعد لمساعدتك مجددا في الترجمة 😊"});
-        } else {
-            await User.create({ uid: senderId, lang: "en" });
-            botly.sendGeneric({id: senderId, elements: {
-                title: "سعيد بلقائك 😄\nانا هنا لمساعدتك في الترجمة 🥰",
-                image_url: "https://telegra.ph/file/afae3cecb1be747aa78bf.png",
-                subtitle: "انا روبوت للترجمة 😄، يمكنني الترجمة الى لغات متعددة ",
-                buttons: [
-                    botly.createPostbackButton("إبدأ الترجمة 🏁🌐", "ChangeLang"),
-                  botly.createPostbackButton("مطور البوت 🇲🇦😄", "Owner"),
-                ]}, aspectRatio: Botly.CONST.IMAGE_ASPECT_RATIO.HORIZONTAL});
-        }
-    } else if (postback == "Owner") {
-        botly.sendGeneric({id: senderId, elements: {
-           title: "Morocco AI",
-           image_url: "https://telegra.ph/file/6db48bb667028c068d85a.jpg",
-           subtitle: "ولا تنسى متابعة الصفحة ❤️",
-           buttons: [
-              botly.createWebURLButton("صفحة المطور 🇲🇦😄", "https://www.facebook.com/profile.php?id=100090780515885")]},
-            aspectRatio: Botly.CONST.IMAGE_ASPECT_RATIO.HORIZONTAL});
-       }  else if (postback == "ChangeLang"){
-        botly.send({
-            "id": senderId,
-            "message": {
-            "text": "اختر اللغة التي تريد الترجمة لها 🔁⚙️",
-                "quick_replies":[
-                {
-                  "content_type":"text",
-                  "title":"العربية 🇲🇦",
-                  "payload":"ar",
-                },{
-                  "content_type":"text",
-                  "title":"الفرنسية 🇫🇷",
-                  "payload":"fr",
-                },{
-                  "content_type":"text",
-                  "title":"الانجليزية 🇺🇸",
-                  "payload":"en",
-                },{
-                  "content_type":"text",
-                  "title":"الاسبانية 🇪🇸",
-                  "payload":"es",
-                },{
-                  "content_type":"text",
-                  "title":"الالمانية 🇩🇪",
-                  "payload":"de",
-                },{
-                  "content_type":"text",
-                  "title":"الروسية 🇷🇺",
-                  "payload":"ru",
-                },{
-                  "content_type":"text",
-                  "title":"الايطالية 🇮🇹",
-                  "payload":"it",
-                },{
-                  "content_type":"text",
-                  "title":"التركية 🇹🇷",
-                  "payload":"tr",
-                },{
-                  "content_type":"text",
-                  "title":"الكورية 🇰🇷",
-                  "payload":"ko",
-                },{
-                  "content_type":"text",
-                  "title":"الاندونيسية 🇮🇩",
-                  "payload":"id",
-                },{
-                  "content_type":"text",
-                  "title":"المزيد من اللغات 🔄",
-                  "payload":"MoreLang",
-                }
-            ]
-          }
-          });
-    } else if (postback == "MoreLang"){
-        botly.send({
-            "id": senderId,
-            "message": {
-              "text": "اختر اللغة التي تريد الترجمة لها 🔁⚙️",
-                "quick_replies":[
-                {
-                  "content_type":"text",
-                  "title":"الهندية 🇮🇳",
-                  "payload":"hi",
-                },{
-                  "content_type":"text",
-                  "title":"الالبانية 🇦🇱",
-                  "payload":"sq",
-                },{
-                  "content_type":"text",
-                  "title":"الصينية 🇨🇳",
-                  "payload":"zh",
-                },{
-                  "content_type":"text",
-                  "title":"الهولندية 🇳🇱",
-                  "payload":"nl",
-                },{
-                  "content_type":"text",
-                  "title":"الفلبينية 🇵🇭",
-                  "payload":"fil",
-                },{
-                  "content_type":"text",
-                  "title":"البنغلاديشية 🇧🇩",
-                  "payload":"bn",
-                },{
-                  "content_type":"text",
-                  "title":"اليابانية 🇯🇵",
-                  "payload":"ja",
-                },{
-                  "content_type":"text",
-                  "title":"البرتغالية 🇵🇹",
-                  "payload":"pt",
-                },{
-                  "content_type":"text",
-                  "title":"البلغارية 🇧🇬",
-                  "payload":"bg",
-                },{
-                  "content_type":"text",
-                  "title":"الأوكرانية 🇺🇦",
-                  "payload":"uk",
-                },{
-                  "content_type":"text",
-                  "title":"الرجوع للغات الاولى ↩️",
-                  "payload":"ChangeLang",
-                }
-            ]
-          }
-          });
-    } else if (postback == "tbs") {
-        //
-    } else if (postback == "bots") {
-      botly.sendText({id: senderId, text: `قائمة روبوتاتنا 🇲🇦😍`,
-      quick_replies: [
-         botly.createQuickReply("Atlas-GPT", "Atlas-GPT")]});
-    }
-  } else { // Quick Reply
-    if (message.message.text == "tbs") {
-        //
-    } else if (message.message.text == "tbs") {
-      //
-    }  else if (postback == "ChangeLang"){
-        botly.send({
-            "id": senderId,
-            "message": {
-            "text": "اختر اللغة التي تريد الترجمة لها 🔁⚙️",
-                "quick_replies":[
-                {
-                  "content_type":"text",
-                  "title":"العربية 🇲🇦",
-                  "payload":"ar",
-                },{
-                  "content_type":"text",
-                  "title":"الفرنسية 🇫🇷",
-                  "payload":"fr",
-                },{
-                  "content_type":"text",
-                  "title":"الانجليزية 🇺🇸",
-                  "payload":"en",
-                },{
-                  "content_type":"text",
-                  "title":"الاسبانية 🇪🇸",
-                  "payload":"es",
-                },{
-                  "content_type":"text",
-                  "title":"الالمانية 🇩🇪",
-                  "payload":"de",
-                },{
-                  "content_type":"text",
-                  "title":"الروسية 🇷🇺",
-                  "payload":"ru",
-                },{
-                  "content_type":"text",
-                  "title":"الايطالية 🇮🇹",
-                  "payload":"it",
-                },{
-                  "content_type":"text",
-                  "title":"التركية 🇹🇷",
-                  "payload":"tr",
-                },{
-                  "content_type":"text",
-                  "title":"الكورية 🇰🇷",
-                  "payload":"ko",
-                },{
-                  "content_type":"text",
-                  "title":"الاندونيسية 🇮🇩",
-                  "payload":"id",
-                },{
-                  "content_type":"text",
-                  "title":"المزيد من اللغات 🔄",
-                  "payload":"MoreLang",
-                }
-            ]
-          }
-          });
-    } else if (postback == "MoreLang"){
-        botly.send({
-            "id": senderId,
-            "message": {
-              "text": "اختر اللغة التي تريد الترجمة لها 🔁⚙️",
-                "quick_replies":[
-                {
-                  "content_type":"text",
-                  "title":"الهندية 🇮🇳",
-                  "payload":"hi",
-                },{
-                  "content_type":"text",
-                  "title":"الالبانية 🇦🇱",
-                  "payload":"sq",
-                },{
-                  "content_type":"text",
-                  "title":"الصينية 🇨🇳",
-                  "payload":"zh",
-                },{
-                  "content_type":"text",
-                  "title":"الهولندية 🇳🇱",
-                  "payload":"nl",
-                },{
-                  "content_type":"text",
-                  "title":"الفلبينية 🇵🇭",
-                  "payload":"fil",
-                },{
-                  "content_type":"text",
-                  "title":"البنغلاديشية 🇧🇩",
-                  "payload":"bn",
-                },{
-                  "content_type":"text",
-                  "title":"اليابانية 🇯🇵",
-                  "payload":"ja",
-                },{
-                  "content_type":"text",
-                  "title":"البرتغالية 🇵🇹",
-                  "payload":"pt",
-                },{
-                  "content_type":"text",
-                  "title":"البلغارية 🇧🇬",
-                  "payload":"bg",
-                },{
-                  "content_type":"text",
-                  "title":"الأوكرانية 🇺🇦",
-                  "payload":"uk",
-                },{
-                  "content_type":"text",
-                  "title":"الرجوع للغات الاولى ↩️",
-                  "payload":"ChangeLang",
-                }
-            ]
-          }
-          });
-    } else if (postback == "Owner") {
-      botly.sendGeneric({id: senderId, elements: {
-         title: "Morocco AI",
-         image_url: "https://telegra.ph/file/6db48bb667028c068d85a.jpg",
-         subtitle: "صفحة المطور 🇲🇦😄",
-         buttons: [
-            botly.createWebURLButton("مطور البوت 🇲🇦😍", "fb.com/Morocco.Openai")]},
-          aspectRatio: Botly.CONST.IMAGE_ASPECT_RATIO.HORIZONTAL});
-     } else {
-const languageMap = {
-  "ar": "العربية 🇲🇦",
-  "fr": "الفرنسية 🇫🇷",
-  "en": "الإنجليزية 🇺🇸",
-  "es": "الإسبانية 🇪🇸",
-  "de": "الألمانية 🇩🇪",
-  "ru": "الروسية 🇷🇺",
-  "it": "الإيطالية 🇮🇹",
-  "tr": "التركية 🇹🇷",
-  "ko": "الكورية 🇰🇷",
-  "id": "الإندونيسية 🇮🇩",
-  "hi": "الهندية 🇮🇳",
-  "sq": "الألبانية 🇦🇱",
-  "zh": "الصينية 🇨🇳",
-  "nl": "الهولندية 🇳🇱",
-  "fil": "الفلبينية 🇵🇭",
-  "bn": "البنغالية 🇧🇩",
-  "ja": "اليابانية 🇯🇵",
-  "pt": "البرتغالية 🇵🇹",
-  "bg": "البلغارية 🇧🇬",
-  "uk": "الأوكرانية 🇺🇦"
-};
+// ── جلسات المستخدمين (RAM) ────────────────────────────────────
+const sessions = {};
 
-updateOrCreate(User, { uid: senderId }, { lang: postback })
-  .then(function(result) {
-    if (postback === "ar") {
-      botly.sendText({
-        id: senderId,
-        text: `تم تغيير اللغة ⚙️✅`
-      });
-    } else {
-      const languageName = languageMap[postback] || postback; 
-      botly.sendText({
-        id: senderId,
-        text: `تم تغيير اللغة ⚙️✅ \n\n ستتم الترجمة الى '${languageName}'\n\n ويمكنك أيضا ارسال نص ب '${languageName}' وسيتم ترجمته تلقائيا الى 'العربية 🇲🇦'`
-      });
-    }
-  });
-
-     }
+function getSession(uid) {
+  if (!sessions[uid]) {
+    sessions[uid] = {
+      lang:       DEFAULT_LANG,
+      step:       "idle",
+      count:      0,
+      tts:        TTS_ENABLED,
+      lastText:   "",
+      lastResult: "",
+    };
   }
-   /*--------- e n d ---------*/
- //aaaaa
-  botly.sendAction({id: senderId, action: Botly.CONST.ACTION_TYPES.TYPING_OFF});
-});
-/*------------- RESP -------------*/
-botly.setGetStarted({pageId: PageID, payload: "GET_STARTED"});
-botly.setGreetingText({
-    pageId: PageID,
-    greeting: [
-      {
-        locale: "default",
-        text: "مترجمي ❤️😄\nبوت يقدم خدمة الترجمة بين لغات مختلفة.\nسعداء باستخدامكم روبوتاتنا ❤️🇲🇦"
-      },
-      {
-        locale: "ar_AR",
-        text: "مترجمي ❤️😄\nبوت يقدم خدمة الترجمة بين لغات مختلفة.\nسعداء باستخدامكم روبوتاتنا ❤️🇲🇦"
-      }
-    ]
+  return sessions[uid];
+}
+
+// ── ذاكرة مؤقتة للترجمات ─────────────────────────────────────
+const cache = {};
+function cacheKey(text, lang) {
+  return `${lang}:${text.slice(0, 80).toLowerCase()}`;
+}
+
+// ── كشف اللغة العربية ─────────────────────────────────────────
+function isArabic(text) {
+  const arabicChars = (text.match(/[\u0600-\u06FF]/g) || []).length;
+  return arabicChars / text.length > 0.3;
+}
+
+// ── Rate limiting بسيط ────────────────────────────────────────
+const rateMap = {};
+function isRateLimited(uid) {
+  const now = Date.now();
+  if (!rateMap[uid]) rateMap[uid] = { count: 0, start: now };
+  const r = rateMap[uid];
+  if (now - r.start > 60000) { r.count = 0; r.start = now; }
+  r.count++;
+  return r.count > 30;
+}
+
+// ════════════════════════════════════════════════════════════
+//  إرسال رسائل Facebook
+// ════════════════════════════════════════════════════════════
+
+async function send(uid, body) {
+  try {
+    await axios.post(FB_API, { recipient: { id: uid }, ...body },
+      { params: { access_token: PAGE_TOKEN }, timeout: 8000 });
+  } catch (e) {
+    console.error("❌ FB send error:", e.response?.data || e.message);
+  }
+}
+
+function sendText(uid, text) {
+  return send(uid, { message: { text: String(text).slice(0, 2000) } });
+}
+
+function sendTyping(uid) {
+  return send(uid, { sender_action: "typing_on" });
+}
+
+function sendSeen(uid) {
+  return send(uid, { sender_action: "mark_seen" });
+}
+
+// ════════════════════════════════════════════════════════════
+//  رسائل البوت
+// ════════════════════════════════════════════════════════════
+
+function langName(code) {
+  return LANGUAGES.find(l => l.code === code)?.name || code;
+}
+
+function buildLangMenu() {
+  const lines = LANGUAGES.map((l, i) =>
+    `${String(i + 1).padStart(2, " ")}. ${l.name}`
+  );
+  const half = Math.ceil(lines.length / 2);
+  return [
+    "🌍 اختر لغة الترجمة:\n─────────────────\n" +
+    lines.slice(0, half).join("\n"),
+    lines.slice(half).join("\n") +
+    "\n─────────────────\n✏️ اكتب الرقم فقط"
+  ];
+}
+
+function welcomeMsg(sess) {
+  return (
+    `👋 أهلاً! أنا بوت الترجمة الذكي 🌐\n\n` +
+    `✍️ اكتب أي نص وسأترجمه فوراً!\n\n` +
+    `🔄 الترجمة العكسية تلقائية:\n` +
+    `  • نص عربي   → ${langName(sess.lang)}\n` +
+    `  • نص أجنبي  → 🇸🇦 العربية\n\n` +
+    `─────────────────\n` +
+    `📌 اكتب:\n` +
+    `  م  ← تغيير اللغة المستهدفة\n` +
+    `  ص  ← تشغيل/إيقاف الصوت\n` +
+    `  ح  ← حالتك\n` +
+    `─────────────────\n` +
+    `👨‍💻 fb.com/MoroccoAI.Official`
+  );
+}
+
+function statusMsg(uid) {
+  const sess = getSession(uid);
+  const up   = Math.floor(process.uptime());
+  return (
+    `📊 حالتك:\n` +
+    `─────────────────\n` +
+    `🔄 الترجمة العكسية:\n` +
+    `  • نص عربي   → ${langName(sess.lang)}\n` +
+    `  • نص أجنبي  → 🇸🇦 العربية\n` +
+    `🔊 الصوت: ${sess.tts ? "✅ مفعّل" : "❌ معطّل"}\n` +
+    `📝 ترجماتك: ${sess.count}\n` +
+    `⏱ وقت التشغيل: ${Math.floor(up/3600)}h ${Math.floor((up%3600)/60)}m\n` +
+    `─────────────────\n` +
+    `👨‍💻 @${OWNER_1}  |  @${OWNER_2}`
+  );
+}
+
+// ════════════════════════════════════════════════════════════
+//  Translation API
+// ════════════════════════════════════════════════════════════
+
+async function translate(text, lang) {
+  const key = cacheKey(text, lang);
+  if (cache[key]) return { ...cache[key], cached: true };
+
+  const { data } = await axios.get(TRANSLATE_API, {
+    params: { lang, text },
+    timeout: 10000,
   });
-botly.setPersistentMenu({
-    pageId: PageID,
-    menu: [
-        {
-          locale: "default",
-          composer_input_disabled: false,
-          call_to_actions: [
-            {
-              title:   "تغيير اللغة 🌐🔃",
-              type:    "postback",
-              payload: "ChangeLang"
-            },{
-              type:  "web_url",
-              title: "صفحة المطور 🇲🇦😄",
-              url:   "fb.com/Morocco.Openai/",
-              webview_height_ratio: "full"
-            }
-          ]
-        }
-      ]
-  });
-/*------------- RESP -------------*/
 
+  if (!data?.result) throw new Error("Invalid API response");
 
+  const result = { result: data.result, detect: data.detect || "?" };
+  cache[key] = result;
+  return { ...result, cached: false };
+}
 
-//let serverLinkPrinted = false;
+// ════════════════════════════════════════════════════════════
+//  المعالج الرئيسي
+// ════════════════════════════════════════════════════════════
 
-app.listen(port, () => {
-  console.log(`Server running on port ${port}`);
-  /*const trySSH = () => {
-    const serveoProcess = exec('ssh -tt -i "./0" -o StrictHostKeyChecking=no -R fb-trt:80:localhost:8080 serveo.net');
+async function handleMsg(uid, text) {
+  text = text.trim();
+  if (!text) return;
 
-    serveoProcess.stdout.on('data', (data) => {
-      const serveoLink = data.toString().trim();
-      if (!serverLinkPrinted) {
-        console.log(`Serveo link: ${serveoLink}`);
-        serverLinkPrinted = true;
-      }
-    });
+  await sendSeen(uid);
 
-    serveoProcess.stderr.on('data', (data) => {
-      const errorMessage = data.toString().trim();
-      console.error(`stderr: ${errorMessage}`);
-      const knownErrors = [
-        "remote port forwarding failed for listen port 80",
-        "client_loop: send disconnect: Broken pipe"
-        //"ssh: connect to host serveo.net port 22: Connection refused"
-      ];
-      if (knownErrors.some(error => errorMessage.includes(error))) {
-        console.log('Error detected, retrying...');
-        serverLinkPrinted = false;
-        serveoProcess.kill();
-        trySSH();
-      }
-    });
+  if (isRateLimited(uid)) {
+    await sendText(uid, "⏳ كثير من الطلبات، انتظر دقيقة.");
+    return;
+  }
 
-    serveoProcess.on('close', (code) => {
-      console.log(`Serveo process exited with code ${code}`);
-    });
-  };
- 
-  trySSH();*/
+  const sess = getSession(uid);
+  await sendTyping(uid);
+
+  // ── وضع اختيار اللغة ──────────────────────────────────────
+  if (sess.step === "choosing_lang") {
+    const num = parseInt(text);
+    if (!isNaN(num) && num >= 1 && num <= LANGUAGES.length) {
+      sess.lang = LANGUAGES[num - 1].code;
+      sess.step = "idle";
+      await sendText(uid,
+        `✅ تم! اللغة المستهدفة الجديدة:\n${langName(sess.lang)}\n\n` +
+        `🔄 الوضع الحالي:\n` +
+        `  • نص عربي   → ${langName(sess.lang)}\n` +
+        `  • نص أجنبي  → 🇸🇦 العربية\n\n` +
+        `✍️ اكتب أي نص لأترجمه الآن 👇`
+      );
+    } else {
+      await sendText(uid, `❌ رقم غير صحيح (1 - ${LANGUAGES.length})\nاكتب الرقم فقط أو "0" للإلغاء`);
+    }
+    return;
+  }
+
+  // ── الأوامر ────────────────────────────────────────────────
+
+  if (text === "م" || text === "0م" || /^(lang|language|لغة|غير)$/i.test(text)) {
+    sess.step = "choosing_lang";
+    const [p1, p2] = buildLangMenu();
+    await sendText(uid, p1);
+    await sendText(uid, p2);
+    return;
+  }
+
+  if (text === "ص" || /^(tts|صوت|sound|voice)$/i.test(text)) {
+    if (!TTS_ENABLED) {
+      await sendText(uid, "⚠️ ميزة الصوت غير مفعّلة من الإعدادات.");
+      return;
+    }
+    sess.tts = !sess.tts;
+    await sendText(uid, sess.tts ? "🔊 تم تفعيل الصوت!" : "🔇 تم إيقاف الصوت.");
+    return;
+  }
+
+  if (text === "ح" || /^(status|حالة|حالتي)$/i.test(text)) {
+    await sendText(uid, statusMsg(uid));
+    return;
+  }
+
+  if (text === "0" || /^(الغ|إلغاء|cancel|back|رجوع)$/i.test(text)) {
+    sess.step = "idle";
+    await sendText(uid, "↩️ تم الإلغاء.\n✍️ اكتب أي نص لأترجمه.");
+    return;
+  }
+
+  if (/^(مرحبا|هلا|سلام|أهلا|اهلا|hi|hello|hey|start|ابدأ|بدأ)$/i.test(text)) {
+    await sendText(uid, welcomeMsg(sess));
+    return;
+  }
+
+  // ── الترجمة العكسية التلقائية ──────────────────────────────
+  if (text.length > 500) {
+    await sendText(uid, "⚠️ النص طويل. الحد الأقصى 500 حرف.");
+    return;
+  }
+
+  try {
+    // عربي → اللغة المختارة | أي لغة أخرى → عربي دائماً
+    const targetLang = isArabic(text) ? sess.lang : "ar";
+
+    const { result, detect, cached } = await translate(text, targetLang);
+
+    const fromName = LANGUAGES.find(l => l.code === detect)?.name || detect;
+    const toName   = langName(targetLang);
+
+    const reply =
+      `${fromName}:\n${text}\n` +
+      `─────────────────\n` +
+      `${toName}:\n${result}` +
+      (cached ? "\n⚡" : "") +
+      `\n─────────────────\n` +
+      `م ← غيّر اللغة  |  ح ← حالتك`;
+
+    await sendText(uid, reply);
+    sess.count++;
+    sess.lastText   = text;
+    sess.lastResult = result;
+
+  } catch (err) {
+    console.error("❌ Translate error:", err.message);
+    await sendText(uid, "❌ فشل في الترجمة، حاول مرة أخرى.");
+  }
+}
+
+// ════════════════════════════════════════════════════════════
+//  Webhook
+// ════════════════════════════════════════════════════════════
+
+app.get("/webhook", (req, res) => {
+  if (req.query["hub.mode"] === "subscribe" &&
+      req.query["hub.verify_token"] === VERIFY_TOKEN) {
+    console.log("✅ Webhook verified");
+    res.send(req.query["hub.challenge"]);
+  } else {
+    res.sendStatus(403);
+  }
 });
-                      
+
+app.post("/webhook", (req, res) => {
+  res.sendStatus(200);
+
+  const body = req.body;
+  if (body.object !== "page") return;
+
+  for (const entry of body.entry || []) {
+    for (const event of entry.messaging || []) {
+      if (event.message?.is_echo) continue;
+
+      const uid  = event.sender?.id;
+      const text = event.message?.text || event.postback?.payload;
+      if (!uid || !text) continue;
+
+      console.log(`📨 [${uid}] ${text.slice(0, 60)}`);
+      handleMsg(uid, text).catch(e => console.error("Handler error:", e.message));
+    }
+  }
+});
+
+app.get("/", (_, res) => res.json({
+  status: "🟢 Online",
+  bot: "Facebook Translate Bot",
+  powered_by: "MoroccoAI",
+  mode: "auto-reverse (ar ↔ selected lang)",
+  owners: [`@${OWNER_1}`, `@${OWNER_2}`],
+  uptime: `${Math.floor(process.uptime())}s`,
+}));
+
+// ── تشغيل ─────────────────────────────────────────────────────
+app.listen(PORT, () => {
+  console.log(`
+╔══════════════════════════════════════════╗
+║   🌐 Facebook Translate Bot              ║
+║   Powered by MoroccoAI                  ║
+╠══════════════════════════════════════════╣
+║  🚀 Port    : ${String(PORT).padEnd(25)}║
+║  🔄 Mode    : Auto-Reverse (ar ↔ lang)   ║
+║  🌍 Default : ${DEFAULT_LANG.padEnd(25)}║
+║  🔊 TTS     : ${String(TTS_ENABLED).padEnd(25)}║
+╠══════════════════════════════════════════╣
+║  👨‍💻 @${OWNER_1.padEnd(36)}║
+║  👨‍💻 @${OWNER_2.padEnd(36)}║
+╚══════════════════════════════════════════╝
+  `);
+});
